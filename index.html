@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La chasse au trésor</title>
+    <style>
+        :root { --primary: #7d5fff; --danger: #ff4d4d; --success: #2ecc71; --gold: #f1c40f; --bg: #0d0d16; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: white; text-align: center; padding: 10px; margin: 0; }
+        .container { max-width: 500px; margin: auto; }
+        
+        /* Grille forcée en 2 colonnes / 3 lignes */
+        .game-grid { 
+            display: grid; 
+            grid-template-columns: 1fr 1fr; 
+            grid-template-rows: repeat(3, auto); 
+            gap: 12px; 
+            margin-top: 15px; 
+        }
+        
+        .chest { background: #161625; border: 2px solid #2d2d4d; border-radius: 12px; padding: 12px; transition: 0.3s; position: relative; }
+        .chest.active { border-color: var(--primary); box-shadow: 0 0 10px rgba(125, 95, 255, 0.1); }
+        .chest.won { border-color: var(--success); background: #1a2a1f; box-shadow: 0 0 15px rgba(46, 204, 113, 0.2); }
+        .chest.lost { border-color: var(--danger); opacity: 0.4; }
+        
+        .chest-img-container { width: 100%; height: 100px; display: flex; align-items: center; justify-content: center; margin-bottom: 5px; }
+        .chest-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        
+        .score { font-size: 1.8rem; font-weight: bold; margin: 2px 0; }
+        .score.bonus { color: var(--gold); text-shadow: 0 0 8px gold; }
+        
+        .dice-display { font-size: 1.3rem; color: #888; min-height: 30px; margin-bottom: 5px; display: flex; justify-content: center; flex-wrap: wrap; gap: 1px; }
+        .bonus-badge { color: var(--gold); font-size: 0.6rem; font-weight: bold; height: 15px; text-transform: uppercase; letter-spacing: 1px; }
+        
+        button { background: var(--primary); border: none; color: white; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; transition: 0.2s; font-size: 0.85rem; }
+        button:disabled { background: #485460; cursor: not-allowed; }
+        
+        #summary { margin-top: 20px; padding: 15px; background: #1e1e2e; border-radius: 12px; border-left: 6px solid var(--gold); text-align: left; }
+        .stat-line { font-size: 1rem; margin: 5px 0; }
+        .highlight { color: var(--success); font-weight: bold; font-size: 1.2rem; }
+        .combo-text { color: var(--gold); font-weight: bold; font-style: italic; font-size: 1.1rem; }
+        .warning { color: var(--danger); font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2 style="margin: 10px 0;">La chasse au trésor</h2>
+    
+    <div class="game-grid" id="grid"></div>
+
+    <div id="summary">
+        <div class="stat-line">📦 Ouverts : <span id="chest-count" class="highlight">0</span> / 6</div>
+        <div class="stat-line">🔥 Multiplicateur : <span id="combo-val" class="combo-text">x1</span></div>
+        <div class="stat-line">⏳ Temps Final : <span id="total-time" class="highlight">0</span> min</div>
+        <div class="stat-line">🗝 Verdict : <span id="final-status">En attente...</span></div>
+    </div>
+    
+    <button onclick="initGame()" style="margin-top:15px; background:#485460; width:auto; padding: 8px 25px; font-size:0.8rem;">🔄 Nouvelle Partie</button>
+</div>
+
+<script>
+const REWARDS_POOL = [
+    { type: '2 min', weight: 35, val: 2 },
+    { type: '5 min', weight: 30, val: 5 },
+    { type: '10 min', weight: 20, val: 10 },
+    { type: '💦 Jouir', weight: 10, val: 0 },
+    { type: '🛑 Abstinence', weight: 5, val: -1 }
+];
+
+const DICE_ICONS = ["", "⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
+// Noms des fichiers images correspondant à tes fichiers
+const IMG_CLOSED = 'coffre_close.png';
+const IMG_OPEN = 'coffre_open.png';
+
+let chests = [];
+let isGameOver = false;
+
+function drawReward() {
+    let rand = Math.random() * 100;
+    let cum = 0;
+    for (let r of REWARDS_POOL) {
+        cum += r.weight;
+        if (rand < cum) return r;
+    }
+    return REWARDS_POOL[0];
+}
+
+function initGame() {
+    isGameOver = false;
+    chests = [];
+    
+    // Au moins 1 gagnant garanti, 50% de chance d'en avoir un 2e
+    let winnerCount = Math.random() < 0.5 ? 2 : 1;
+    let winnerIndices = [];
+    while(winnerIndices.length < winnerCount) {
+        let r = Math.floor(Math.random() * 6);
+        if(!winnerIndices.includes(r)) winnerIndices.push(r);
+    }
+
+    for (let i = 0; i < 6; i++) {
+        chests.push({
+            id: i, score: 0, rolls: [], 
+            reward: drawReward(), status: 'active',
+            multiplier: 1, isGuaranteed: winnerIndices.includes(i)
+        });
+    }
+    render();
+    updateUI();
+}
+
+function roll(id) {
+    if (isGameOver) return;
+    let c = chests[id];
+    let die;
+
+    if (c.isGuaranteed) {
+        let remaining = 12 - c.score;
+        if (remaining > 6) {
+            die = Math.floor(Math.random() * 6) + 1;
+        } else {
+            // Forcer le résultat gagnant sans dépasser
+            die = Math.floor(Math.random() * remaining) + 1;
+            if (Math.random() < 0.4) die = remaining; 
+        }
+    } else {
+        die = Math.floor(Math.random() * 6) + 1;
+    }
+
+    c.rolls.push(die);
+    c.score += die;
+
+    if (c.rolls.length === 2 && c.rolls[0] === 6 && c.rolls[1] === 6) {
+        c.multiplier = 2;
+    }
+
+    if (c.score === 12) c.status = 'won';
+    else if (c.score > 12) c.status = 'lost';
+
+    updateUI();
+    render();
+}
+
+function updateUI() {
+    let baseMin = 0;
+    let wonChests = chests.filter(c => c.status === 'won');
+    let chestCount = wonChests.length;
+    let canCum = false;
+    let stop = false;
+    let allFinished = !chests.some(c => c.status === 'active');
+
+    wonChests.forEach(c => {
+        if (c.reward.type.includes('🛑')) stop = true;
+        if (c.reward.type.includes('💦')) canCum = true;
+        if (c.reward.val > 0) baseMin += (c.reward.val * c.multiplier);
+    });
+
+    let finalMin = baseMin * (chestCount > 0 ? chestCount : 1);
+
+    document.getElementById('chest-count').innerText = chestCount;
+    document.getElementById('combo-val').innerText = `x${chestCount || 1}`;
+    document.getElementById('total-time').innerText = finalMin;
+
+    const statusEl = document.getElementById('final-status');
+    if (stop) {
+        statusEl.innerHTML = "<span class='warning'>🛑 STOP ! Abstinence pendant 24 heures.</span>";
+        isGameOver = true;
+    } else if (allFinished) {
+        isGameOver = true;
+        if (canCum) {
+            statusEl.innerHTML = `<span class="highlight">💦 Orgasme autorisé (Après ${finalMin} min)</span>`;
+        } else {
+            statusEl.innerHTML = `Session de ${finalMin} min (Interdit)`;
+        }
+    }
+}
+
+function render() {
+    const grid = document.getElementById('grid');
+    grid.innerHTML = '';
+    chests.forEach(c => {
+        const div = document.createElement('div');
+        div.className = `chest ${c.status}`;
+        
+        const diceString = c.rolls.map(val => DICE_ICONS[val]).join('');
+        
+        // Gestion de l'affichage Image ou Mort
+        let chestContent = `<img src="${IMG_CLOSED}" class="chest-img">`;
+        if (c.status === 'won') {
+            chestContent = `<img src="${IMG_OPEN}" class="chest-img">`;
+        } else if (c.status === 'lost') {
+            chestContent = `<div style="font-size:3rem; margin:15px 0;">💀</div>`;
+        }
+
+        div.innerHTML = `
+            <div class="bonus-badge">${c.multiplier > 1 ? '🔥 BONUS X2' : ''}</div>
+            <div class="chest-img-container">${chestContent}</div>
+            <div class="score ${c.multiplier > 1 ? 'bonus' : ''}">${c.score}</div>
+            <div class="dice-display">${diceString}</div>
+            <button onclick="roll(${c.id})" ${(c.status !== 'active' || isGameOver) ? 'disabled' : ''}>Lancer</button>
+            <div style="margin-top:8px; font-weight:bold; color:var(--success); font-size:0.8rem; min-height:15px">
+                ${c.status === 'won' ? c.reward.type : ''}
+            </div>
+        `;
+        grid.appendChild(div);
+    });
+}
+
+initGame();
+</script>
+</body>
+</html>
